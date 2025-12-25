@@ -19,6 +19,7 @@ coverage/
 /.cache/
 *.pyc
 /.pytest_cache/
+shared-docs/
 public/asset-manifest.json# dependencies
 /node_modules
 /.pnp
