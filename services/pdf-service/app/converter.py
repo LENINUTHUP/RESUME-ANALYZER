@@ -6,10 +6,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Determine workspace root relative to this file and use shared-docs from there.
-# This is robust to the current working directory used to start the service.
-WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-SHARED_DIR = WORKSPACE_ROOT / "shared-docs"
+BASE_DIR = Path(__file__).resolve().parent.parent
+SHARED_DIR = BASE_DIR / "shared-docs"
 UPLOAD_DIR = SHARED_DIR / "uploads"
 CONVERTED_DIR = SHARED_DIR / "converted"
 
