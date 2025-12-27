@@ -15,7 +15,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
+WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 SHARED_DIR = WORKSPACE_ROOT / "shared-docs"
 UPLOAD_DIR = str(SHARED_DIR / "uploads")
 Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
