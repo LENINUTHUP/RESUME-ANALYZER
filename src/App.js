@@ -1,478 +1,98 @@
-import React, { useState, useRef } from 'react';
-import { Upload, Send, FileText, ChevronDown, ChevronUp, X, Download, Edit3, Sparkles, BarChart3 } from 'lucide-react';
-import { parseResume } from './utils/fileParser';
-import { analyzeResume } from './utils/geminiAPI';
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+import shutil
+import os
+from pathlib import Path
+from .converter import convert_pdf_to_docx
+import uuid
 
-const ResumeAnalyzer = () => {
-  const [jobDescription, setJobDescription] = useState('');
-  const [uploadedFile, setUploadedFile] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [showEditor, setShowEditor] = useState(false);
-  const [editorExpanded, setEditorExpanded] = useState(true);
-  const [editorFilename, setEditorFilename] = useState(null);
-  const [resumeData, setResumeData] = useState(null);
-  const [editableContent, setEditableContent] = useState('');
-  const fileInputRef = useRef(null);
-  const chatEndRef = useRef(null);
+app = FastAPI()
 
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (file && (file.type === 'application/pdf' || file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')) {
-      setUploadedFile(file);
-    } else {
-      alert('Please upload a PDF or DOCX file');
-    }
-  };
+# ---------------- CORS (REQUIRED for editor) ----------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-  const handleOpenEditor = async () => {
-    if (!uploadedFile) {
-      alert('No file uploaded to open in editor');
-      return;
-    }
+# ---------------- Paths ----------------
+BASE_DIR = Path(__file__).resolve().parent.parent
+SHARED_DIR = BASE_DIR / "shared-docs"
+UPLOAD_DIR = SHARED_DIR / "uploads"
+CONVERTED_DIR = SHARED_DIR / "converted"
 
-    try {
-      const form = new FormData();
-      form.append('file', uploadedFile);
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+CONVERTED_DIR.mkdir(parents=True, exist_ok=True)
 
-      const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+# ---------------- PDF → DOCX / DOCX passthrough ----------------
+@app.post("/convert/pdf-to-docx")
+async def pdf_to_docx(file: UploadFile = File(...)):
+    filename_lower = file.filename.lower()
 
-      const resp = await fetch(`${BACKEND_URL}/api/convert/pdf-to-docx`, {
-        method: "POST",
-        body: form
-      });
+    try:
+        # -------- PDF → DOCX --------
+        if filename_lower.endswith(".pdf"):
+            pdf_path = UPLOAD_DIR / file.filename
 
-      if (!resp.ok) {
-        const txt = await resp.text();
-        throw new Error(`Upload failed: ${resp.status} ${txt}`);
-      }
+            with open(pdf_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
 
-      const data = await resp.json();
-      if (data && data.docx_filename) {
-        setEditorFilename(data.docx_filename);
-        setShowEditor(true);
-      } else {
-        throw new Error('Invalid response from conversion service');
-      }
-    } catch (err) {
-      console.error('Error opening editor:', err);
-      alert('Failed to open editor: ' + err.message);
-    }
-  };
+            docx_filename = convert_pdf_to_docx(str(pdf_path))
+            docx_path = CONVERTED_DIR / docx_filename
 
-  const handleAnalyze = async () => {
-    if (!jobDescription.trim() || !uploadedFile) {
-      alert('Please provide both job description and resume');
-      return;
-    }
+            return FileResponse(
+                path=docx_path,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                filename=docx_filename,
+            )
 
-    setIsAnalyzing(true);
-    
-    const userMessage = {
-      type: 'user',
-      content: `📋 Job Description provided\n📄 Uploaded: ${uploadedFile.name}`
-    };
-    setMessages([userMessage]);
+        # -------- DOCX passthrough --------
+        elif filename_lower.endswith(".docx"):
+            new_name = f"{uuid.uuid4().hex}.docx"
+            dest_path = CONVERTED_DIR / new_name
 
-    try {
-      // Parse the ACTUAL uploaded resume
-      console.log('🔍 Parsing uploaded file...');
-      const parsedResume = await parseResume(uploadedFile);
-      
-      // Check if parsing failed
-      if (!parsedResume || !parsedResume.text || parsedResume.text === "Error parsing resume") {
-        throw new Error('Failed to parse resume file. Please ensure the file is a valid PDF or DOCX.');
-      }
-      
-      setResumeData(parsedResume);
-      setEditableContent(parsedResume.html);
-      console.log('✅ Resume parsed and set');
+            with open(dest_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
 
-      setMessages(prev => [...prev, {
-        type: 'ai',
-        content: '🔍 Analyzing your resume against the job description...',
-        loading: true
-      }]);
+            return FileResponse(
+                path=dest_path,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                filename=new_name,
+            )
 
-      // Analyze with Gemini API with fallback
-      let analysis;
-      try {
-        analysis = await analyzeResume(jobDescription, parsedResume.text);
-        
-        // Validate analysis response
-        if (!analysis || !analysis.overallScore || !analysis.sections) {
-          throw new Error('Invalid analysis response from API');
-        }
-      } catch (apiError) {
-        console.error('Gemini API Error:', apiError);
-        
-        // Fallback to basic analysis if Gemini fails
-        analysis = {
-          overallScore: 50,
-          sections: [
-            {
-              name: "Analysis Status",
-              score: 0,
-              matched: [],
-              missing: ["AI Analysis Unavailable"],
-              suggestions: `Unable to complete AI analysis. Error: ${apiError.message}. Please check your API configuration and try again.`
-            },
-            {
-              name: "Basic Resume Check",
-              score: 70,
-              matched: ["Resume uploaded successfully", "Content parsed"],
-              missing: ["Detailed AI analysis"],
-              suggestions: "Your resume was parsed successfully, but AI-powered suggestions are currently unavailable. Please verify your Gemini API key and connection."
-            }
-          ]
-        };
-      }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Only PDF or DOCX files are supported",
+            )
 
-      setMessages(prev => {
-        const withoutLoading = prev.filter(m => !m.loading);
-        return [...withoutLoading, {
-          type: 'ai',
-          content: 'analysis-complete',
-          analysis: analysis
-        }];
-      });
-    } catch (error) {
-      console.error('Analysis error:', error);
-      setMessages(prev => {
-        const withoutLoading = prev.filter(m => !m.loading);
-        return [...withoutLoading, {
-          type: 'ai',
-          content: `❌ Error: ${error.message || 'Failed to analyze resume. Please try again with a different file or check your connection.'}`
-        }];
-      });
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-  const ScoreCircle = ({ score, size = 'large' }) => {
-    const radius = size === 'large' ? 40 : 20;
-    const circumference = 2 * Math.PI * radius;
-    const strokeDashoffset = circumference - (score / 100) * circumference;
-    const color = score >= 75 ? '#10b981' : score >= 50 ? '#f59e0b' : '#ef4444';
+# ---------------- ✅ NEW: Serve files for editor (GET) ----------------
+@app.get("/files/{filename}")
+def get_converted_file(filename: str):
+    file_path = CONVERTED_DIR / filename
 
-    return (
-      <div className="relative inline-flex items-center justify-center">
-        <svg width={size === 'large' ? 100 : 50} height={size === 'large' ? 100 : 50} className="transform -rotate-90">
-          <circle
-            cx={size === 'large' ? 50 : 25}
-            cy={size === 'large' ? 50 : 25}
-            r={radius}
-            stroke="#374151"
-            strokeWidth={size === 'large' ? 8 : 4}
-            fill="none"
-          />
-          <circle
-            cx={size === 'large' ? 50 : 25}
-            cy={size === 'large' ? 50 : 25}
-            r={radius}
-            stroke={color}
-            strokeWidth={size === 'large' ? 8 : 4}
-            fill="none"
-            strokeDasharray={circumference}
-            strokeDashoffset={strokeDashoffset}
-            strokeLinecap="round"
-            className="transition-all duration-1000"
-          />
-        </svg>
-        <span className={`absolute ${size === 'large' ? 'text-2xl' : 'text-sm'} font-bold`} style={{ color }}>
-          {score}
-        </span>
-      </div>
-    );
-  };
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
 
-  const ScoreBoard = ({ analysis }) => {
-    return (
-      <div className="bg-[#2f2f2f] rounded-lg border border-[#4e4e4e] p-6 mb-4">
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-3">
-            <BarChart3 className="text-blue-400" size={24} />
-            <h3 className="text-xl font-bold text-gray-100">ATS Score Dashboard</h3>
-          </div>
-          <ScoreCircle score={analysis.overallScore} />
-        </div>
-        
-        <div className="space-y-4">
-          {analysis.sections.map((section, idx) => (
-            <div key={idx} className="border-b border-[#4e4e4e] last:border-b-0 pb-4 last:pb-0">
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-semibold text-gray-200">{section.name}</span>
-                <div className="flex items-center gap-2">
-                  <ScoreCircle score={section.score} size="small" />
-                </div>
-              </div>
-              
-              <div className="w-full bg-[#1f1f1f] rounded-full h-2 mb-3">
-                <div 
-                  className={`h-2 rounded-full transition-all duration-1000 ${
-                    section.score >= 75 ? 'bg-green-500' : 
-                    section.score >= 50 ? 'bg-yellow-500' : 'bg-red-500'
-                  }`}
-                  style={{ width: `${section.score}%` }}
-                />
-              </div>
+    return FileResponse(
+        path=file_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=filename,
+    )
 
-              {section.matched.length > 0 && (
-                <div className="mb-2">
-                  <p className="text-sm text-gray-400 mb-1">✅ Matched:</p>
-                  <div className="flex flex-wrap gap-1">
-                    {section.matched.map((item, i) => (
-                      <span key={i} className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded border border-green-500/30">
-                        {item}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {section.missing.length > 0 && (
-                <div className="mb-2">
-                  <p className="text-sm text-gray-400 mb-1">⚠️ Missing:</p>
-                  <div className="flex flex-wrap gap-1">
-                    {section.missing.map((item, i) => (
-                      <span key={i} className="text-xs bg-red-500/20 text-red-400 px-2 py-1 rounded border border-red-500/30">
-                        {item}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <p className="text-sm text-gray-400 mt-2">
-                <span className="font-medium text-gray-300">💡 Suggestion:</span> {section.suggestions}
-              </p>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  };
-
-  const ResumeEditor = () => {
-    return (
-      <div className={`fixed right-0 top-0 h-full bg-[#1f1f1f] shadow-2xl transition-all duration-300 ${
-        editorExpanded ? 'w-1/2' : 'w-16'
-      } border-l border-[#4e4e4e] z-50 flex flex-col`}>
-
-        {/* Editor Header */}
-        <div className="bg-[#2f2f2f] border-b border-[#4e4e4e] p-4 flex items-center justify-between flex-shrink-0">
-          {editorExpanded && (
-            <>
-              <div className="flex items-center gap-2">
-                <Edit3 className="text-blue-400" size={20} />
-                <h3 className="font-bold text-lg text-gray-100">Resume Editor</h3>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setEditorExpanded(false)}
-                  className="p-2 hover:bg-[#3f3f3f] rounded transition text-gray-300"
-                >
-                  <ChevronDown size={20} />
-                </button>
-                <button
-                  onClick={() => setShowEditor(false)}
-                  className="p-2 hover:bg-[#3f3f3f] rounded transition text-gray-300"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-            </>
-          )}
-          {!editorExpanded && (
-            <button
-              onClick={() => setEditorExpanded(true)}
-              className="w-full flex justify-center py-2 hover:bg-[#3f3f3f] rounded transition text-gray-300"
-            >
-              <ChevronUp size={20} />
-            </button>
-          )}
-        </div>
-
-        {editorExpanded && (
-          <>
-            {/* ONLYOFFICE Editor */}
-            <div className="flex-1 bg-[#1a1a1a]">
-              {editorFilename ? (
-                <iframe
-                  title="ONLYOFFICE Editor"
-                  className="w-full h-full border-0"
-                  src={`https://documentserver.onlyoffice.com/web-apps/apps/documenteditor/main/index.html?configUrl=${encodeURIComponent(
-                    `${process.env.REACT_APP_BACKEND_URL || 'http://localhost:3001'}/api/onlyoffice/config?filename=${editorFilename}`
-                  )}`}
-                />
-              ) : (
-                <div className="h-full flex items-center justify-center text-gray-400">
-                  No document loaded
-                </div>
-              )}
-            </div>
-
-            {/* Footer */}
-            <div className="border-t border-[#4e4e4e] p-4 bg-[#2f2f2f] flex-shrink-0">
-              <div className="flex gap-3">
-                {/* Footer content can be added here if needed */}
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-    );
-  };
-
-  return (
-    <div className="min-h-screen bg-[#212121] text-gray-100">
-      {/* Header */}
-      <header className="bg-[#171717] border-b border-[#2f2f2f] sticky top-0 z-40">
-        <div className="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
-              <Sparkles className="text-white" size={18} />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-gray-100">Resume Analyzer</h1>
-              <p className="text-gray-500 text-xs">AI-Powered ATS Optimization</p>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content - With proper spacing to avoid overlap with fixed input */}
-      <div className={`transition-all duration-300 ${showEditor && editorExpanded ? 'mr-[50%]' : showEditor ? 'mr-16' : ''}`}>
-        <div className="max-w-4xl mx-auto px-6 py-8 pb-64">
-          {/* Chat Messages */}
-          <div className="space-y-6 mb-6">
-            {messages.length === 0 && (
-              <div className="text-center py-20">
-                <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                  <Sparkles className="text-white" size={32} />
-                </div>
-                <h2 className="text-2xl font-bold text-gray-200 mb-2">Welcome to Resume Analyzer</h2>
-                <p className="text-gray-500">Upload your resume and paste a job description to get started</p>
-              </div>
-            )}
-            
-            {messages.map((message, idx) => (
-              <div key={idx} className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-3xl ${
-                  message.type === 'user' 
-                    ? 'bg-[#2f2f2f] border border-[#4e4e4e]' 
-                    : 'bg-transparent'
-                } rounded-2xl p-5`}>
-                  {message.type === 'user' ? (
-                    <pre className="whitespace-pre-wrap font-sans text-sm text-gray-200">{message.content}</pre>
-                  ) : message.content === 'analysis-complete' ? (
-                    <div>
-                      <div className="flex items-center gap-3 mb-4">
-                        <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
-                          <Sparkles size={18} className="text-white" />
-                        </div>
-                        <h3 className="text-xl font-bold text-gray-100">Analysis Complete</h3>
-                      </div>
-                      <p className="text-gray-400 mb-6">Here's your comprehensive ATS compatibility report:</p>
-                      
-                      <ScoreBoard analysis={message.analysis} />
-
-                      <div className="flex gap-3 mt-6">
-                        <button 
-                          onClick={handleOpenEditor}
-                          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg transition font-medium flex items-center justify-center gap-2"
-                        >
-                          <Edit3 size={18} />
-                          Edit Resume
-                        </button>
-                        <button className="flex-1 bg-[#2f2f2f] hover:bg-[#3f3f3f] border border-[#4e4e4e] text-gray-200 py-3 rounded-lg transition font-medium flex items-center justify-center gap-2">
-                          <Download size={18} />
-                          Download Report
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-3">
-                      {message.loading && (
-                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-400"></div>
-                      )}
-                      <p className="text-gray-300">{message.content}</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-            <div ref={chatEndRef} />
-          </div>
-        </div>
-
-        {/* Fixed Input Section at Bottom */}
-        <div className="fixed bottom-0 left-0 right-0 bg-[#171717] border-t border-[#2f2f2f] z-30" style={{ right: showEditor && editorExpanded ? '50%' : showEditor ? '64px' : '0' }}>
-          <div className="max-w-4xl mx-auto px-6 py-4">
-            <div className="bg-[#2f2f2f] rounded-xl border border-[#4e4e4e] p-4">
-              <div className="flex gap-3 items-end">
-                <div className="flex-1">
-                  <textarea
-                    value={jobDescription}
-                    onChange={(e) => setJobDescription(e.target.value)}
-                    placeholder="Paste job description here..."
-                    className="w-full bg-[#1f1f1f] border border-[#4e4e4e] rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none text-sm text-gray-200 placeholder-gray-500"
-                    rows={3}
-                  />
-                  
-                  {uploadedFile && (
-                    <div className="mt-2 flex items-center gap-2 text-sm text-gray-300 bg-[#1f1f1f] p-2 rounded-lg border border-[#4e4e4e]">
-                      <FileText size={16} className="text-blue-400 flex-shrink-0" />
-                      <span className="truncate flex-1">{uploadedFile.name}</span>
-                      <button 
-                        onClick={() => setUploadedFile(null)}
-                        className="text-gray-500 hover:text-gray-300 flex-shrink-0"
-                      >
-                        <X size={16} />
-                      </button>
-                    </div>
-                  )}
-                </div>
-                
-                <div className="flex gap-2 flex-shrink-0">
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    onChange={handleFileUpload}
-                    accept=".pdf,.docx"
-                    className="hidden"
-                  />
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="bg-[#3f3f3f] hover:bg-[#4f4f4f] text-gray-200 p-3 rounded-lg transition border border-[#4e4e4e]"
-                    title="Upload Resume"
-                  >
-                    <Upload size={20} />
-                  </button>
-                  
-                  <button
-                    onClick={handleAnalyze}
-                    disabled={isAnalyzing || !jobDescription.trim() || !uploadedFile}
-                    className="bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isAnalyzing ? (
-                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                    ) : (
-                      <Send size={20} />
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Resume Editor */}
-      {showEditor && <ResumeEditor />}
-    </div>
-  );
-};
-
-export default ResumeAnalyzer;
+# ---------------- ✅ NEW: Editor save callback (POST) ----------------
+@app.post("/files/save")
+async def save_from_editor(request: Request):
+    """
+    Required by document editors (OnlyOffice / similar).
+    Even if you don't save yet, this MUST exist.
+    """
+    data = await request.json()
+    print("Editor save callback received:", data)
+    return {"error": 0}
