@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 import shutil
 import os
 from pathlib import Path
@@ -15,40 +16,56 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
-SHARED_DIR = WORKSPACE_ROOT / "shared-docs"
-UPLOAD_DIR = str(SHARED_DIR / "uploads")
-Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
+# Safe, deployment-friendly paths
+BASE_DIR = Path(__file__).resolve().parent.parent
+SHARED_DIR = BASE_DIR / "shared-docs"
+UPLOAD_DIR = SHARED_DIR / "uploads"
+CONVERTED_DIR = SHARED_DIR / "converted"
+
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+CONVERTED_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @app.post("/convert/pdf-to-docx")
 async def pdf_to_docx(file: UploadFile = File(...)):
     filename_lower = file.filename.lower()
 
-    # Accept both PDF (convert) and DOCX (save directly to converted)
     try:
-        if filename_lower.endswith('.pdf'):
-            pdf_path = os.path.join(UPLOAD_DIR, file.filename)
+        # -------- PDF → DOCX --------
+        if filename_lower.endswith(".pdf"):
+            pdf_path = UPLOAD_DIR / file.filename
+
             with open(pdf_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
 
-            docx_filename = convert_pdf_to_docx(pdf_path)
+            docx_filename = convert_pdf_to_docx(str(pdf_path))
+            docx_path = CONVERTED_DIR / docx_filename
 
-            return {"status": "success", "docx_filename": docx_filename}
+            return FileResponse(
+                path=docx_path,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                filename=docx_filename,
+            )
 
-        elif filename_lower.endswith('.docx'):
-            # Save the uploaded DOCX directly into the converted folder with a unique name
-            converted_dir = SHARED_DIR / "converted"
-            converted_dir.mkdir(parents=True, exist_ok=True)
+        # -------- DOCX passthrough --------
+        elif filename_lower.endswith(".docx"):
             new_name = f"{uuid.uuid4().hex}.docx"
-            dest_path = converted_dir / new_name
+            dest_path = CONVERTED_DIR / new_name
+
             with open(dest_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
 
-            return {"status": "success", "docx_filename": new_name}
+            return FileResponse(
+                path=dest_path,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                filename=new_name,
+            )
 
         else:
-            raise HTTPException(status_code=400, detail="Only PDF or DOCX files are supported")
+            raise HTTPException(
+                status_code=400,
+                detail="Only PDF or DOCX files are supported",
+            )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
