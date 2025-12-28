@@ -25,22 +25,6 @@ const ResumeAnalyzer = () => {
     }
   };
 
-  const parseFile = async (file) => {
-  try {
-    console.log('📄 Parsing file:', file.name);
-    const result = await parseResume(file);
-    console.log('✅ File parsed successfully');
-    return result;
-  } catch (error) {
-    console.error('❌ File parsing error:', error);
-    // Fallback to mock data if parsing fails
-    return {
-      text: "Error parsing resume",
-      html: "<p>Could not parse the uploaded resume. Please try a different file.</p>"
-    };
-  }
-};
-
   const handleOpenEditor = async () => {
     if (!uploadedFile) {
       alert('No file uploaded to open in editor');
@@ -51,8 +35,10 @@ const ResumeAnalyzer = () => {
       const form = new FormData();
       form.append('file', uploadedFile);
 
-      const resp = await fetch('http://localhost:8001/convert/pdf-to-docx', {
-        method: 'POST',
+      const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+
+      const resp = await fetch(`${BACKEND_URL}/api/convert/pdf-to-docx`, {
+        method: "POST",
         body: form
       });
 
@@ -74,99 +60,95 @@ const ResumeAnalyzer = () => {
     }
   };
 
-  const analyzeWithGemini = async (jd, resumeText) => {
-  // Import the function
-  const { analyzeResume } = await import('./utils/geminiAPI');
-  
-  try {
-    const analysis = await analyzeResume(jd, resumeText);
-    return analysis;
-  } catch (error) {
-    console.error('Analysis error:', error);
-    // Return mock data as fallback
-    return {
-      overallScore: 67,
-      sections: [
+  const handleAnalyze = async () => {
+    if (!jobDescription.trim() || !uploadedFile) {
+      alert('Please provide both job description and resume');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    
+    const userMessage = {
+      type: 'user',
+      content: `📋 Job Description provided\n📄 Uploaded: ${uploadedFile.name}`
+    };
+    setMessages([userMessage]);
+
+    try {
+      // Parse the ACTUAL uploaded resume
+      console.log('🔍 Parsing uploaded file...');
+      const parsedResume = await parseResume(uploadedFile);
+      
+      // Check if parsing failed
+      if (!parsedResume || !parsedResume.text || parsedResume.text === "Error parsing resume") {
+        throw new Error('Failed to parse resume file. Please ensure the file is a valid PDF or DOCX.');
+      }
+      
+      setResumeData(parsedResume);
+      setEditableContent(parsedResume.html);
+      console.log('✅ Resume parsed and set');
+
+      setMessages(prev => [...prev, {
+        type: 'ai',
+        content: '🔍 Analyzing your resume against the job description...',
+        loading: true
+      }]);
+
+      // Analyze with Gemini API with fallback
+      let analysis;
+      try {
+        analysis = await analyzeResume(jobDescription, parsedResume.text);
+        
+        // Validate analysis response
+        if (!analysis || !analysis.overallScore || !analysis.sections) {
+          throw new Error('Invalid analysis response from API');
+        }
+      } catch (apiError) {
+        console.error('Gemini API Error:', apiError);
+        
+        // Fallback to basic analysis if Gemini fails
+        analysis = {
+          overallScore: 50,
+          sections: [
             {
-              name: "Skills Match",
-              score: 45,
-              matched: ["JavaScript", "React", "Node.js"],
-              missing: ["TypeScript", "AWS", "Docker"],
-              suggestions: "Add TypeScript and cloud technologies like AWS to match job requirements. These are critical skills mentioned in the JD."
+              name: "Analysis Status",
+              score: 0,
+              matched: [],
+              missing: ["AI Analysis Unavailable"],
+              suggestions: `Unable to complete AI analysis. Error: ${apiError.message}. Please check your API configuration and try again.`
             },
             {
-              name: "Work Experience",
-              score: 75,
-              matched: ["5 years experience", "Team leadership"],
-              missing: ["Quantifiable achievements", "Specific technologies from JD"],
-              suggestions: "Add metrics and numbers to your achievements. For example: 'Increased application performance by 40%' or 'Reduced load time by 2 seconds'."
-            },
-            {
-              name: "ATS Compatibility",
-              score: 80,
-              matched: ["Standard sections", "Clear formatting"],
-              missing: ["Some keywords", "Action verbs"],
-              suggestions: "Use more action verbs like 'Developed', 'Implemented', 'Optimized'. Ensure all JD keywords are present."
-            },
-            {
-              name: "Education",
-              score: 90,
-              matched: ["Relevant degree", "University mentioned"],
-              missing: [],
-              suggestions: "Education section looks good! Consider adding relevant coursework if applicable."
-            },
-            {
-              name: "Keywords Density",
-              score: 55,
-              matched: ["React", "JavaScript", "development"],
-              missing: ["agile", "CI/CD", "microservices"],
-              suggestions: "Include more keywords from the job description naturally throughout your resume."
+              name: "Basic Resume Check",
+              score: 70,
+              matched: ["Resume uploaded successfully", "Content parsed"],
+              missing: ["Detailed AI analysis"],
+              suggestions: "Your resume was parsed successfully, but AI-powered suggestions are currently unavailable. Please verify your Gemini API key and connection."
             }
           ]
-    };
-  }
-};
-const handleAnalyze = async () => {
-  if (!jobDescription.trim() || !uploadedFile) {
-    alert('Please provide both job description and resume');
-    return;
-  }
+        };
+      }
 
-  setIsAnalyzing(true);
-  
-  const userMessage = {
-    type: 'user',
-    content: `📋 Job Description provided\n📄 Uploaded: ${uploadedFile.name}`
+      setMessages(prev => {
+        const withoutLoading = prev.filter(m => !m.loading);
+        return [...withoutLoading, {
+          type: 'ai',
+          content: 'analysis-complete',
+          analysis: analysis
+        }];
+      });
+    } catch (error) {
+      console.error('Analysis error:', error);
+      setMessages(prev => {
+        const withoutLoading = prev.filter(m => !m.loading);
+        return [...withoutLoading, {
+          type: 'ai',
+          content: `❌ Error: ${error.message || 'Failed to analyze resume. Please try again with a different file or check your connection.'}`
+        }];
+      });
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
-  setMessages([userMessage]);
-
-  // Parse the ACTUAL uploaded resume (not mock data)
-  console.log('🔍 Parsing uploaded file...');
-  const parsedResume = await parseResume(uploadedFile);  // Use imported function
-  setResumeData(parsedResume);
-  setEditableContent(parsedResume.html);
-  console.log('✅ Resume parsed and set');
-
-  setMessages(prev => [...prev, {
-    type: 'ai',
-    content: '🔍 Analyzing your resume against the job description...',
-    loading: true
-  }]);
-
-  // Analyze with Gemini API
-  const analysis = await analyzeResume(jobDescription, parsedResume.text);
-
-  setMessages(prev => {
-    const withoutLoading = prev.filter(m => !m.loading);
-    return [...withoutLoading, {
-      type: 'ai',
-      content: 'analysis-complete',
-      analysis: analysis
-    }];
-  });
-
-  setIsAnalyzing(false);
-};
 
   const ScoreCircle = ({ score, size = 'large' }) => {
     const radius = size === 'large' ? 40 : 20;
@@ -272,76 +254,76 @@ const handleAnalyze = async () => {
     );
   };
 
-const ResumeEditor = () => {
-  return (
-    <div className={`fixed right-0 top-0 h-full bg-[#1f1f1f] shadow-2xl transition-all duration-300 ${
-      editorExpanded ? 'w-1/2' : 'w-16'
-    } border-l border-[#4e4e4e] z-50 flex flex-col`}>
+  const ResumeEditor = () => {
+    return (
+      <div className={`fixed right-0 top-0 h-full bg-[#1f1f1f] shadow-2xl transition-all duration-300 ${
+        editorExpanded ? 'w-1/2' : 'w-16'
+      } border-l border-[#4e4e4e] z-50 flex flex-col`}>
 
-      {/* Editor Header */}
-      <div className="bg-[#2f2f2f] border-b border-[#4e4e4e] p-4 flex items-center justify-between flex-shrink-0">
+        {/* Editor Header */}
+        <div className="bg-[#2f2f2f] border-b border-[#4e4e4e] p-4 flex items-center justify-between flex-shrink-0">
+          {editorExpanded && (
+            <>
+              <div className="flex items-center gap-2">
+                <Edit3 className="text-blue-400" size={20} />
+                <h3 className="font-bold text-lg text-gray-100">Resume Editor</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setEditorExpanded(false)}
+                  className="p-2 hover:bg-[#3f3f3f] rounded transition text-gray-300"
+                >
+                  <ChevronDown size={20} />
+                </button>
+                <button
+                  onClick={() => setShowEditor(false)}
+                  className="p-2 hover:bg-[#3f3f3f] rounded transition text-gray-300"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </>
+          )}
+          {!editorExpanded && (
+            <button
+              onClick={() => setEditorExpanded(true)}
+              className="w-full flex justify-center py-2 hover:bg-[#3f3f3f] rounded transition text-gray-300"
+            >
+              <ChevronUp size={20} />
+            </button>
+          )}
+        </div>
+
         {editorExpanded && (
           <>
-            <div className="flex items-center gap-2">
-              <Edit3 className="text-blue-400" size={20} />
-              <h3 className="font-bold text-lg text-gray-100">Resume Editor</h3>
+            {/* ONLYOFFICE Editor */}
+            <div className="flex-1 bg-[#1a1a1a]">
+              {editorFilename ? (
+                <iframe
+                  title="ONLYOFFICE Editor"
+                  className="w-full h-full border-0"
+                  src={`https://documentserver.onlyoffice.com/web-apps/apps/documenteditor/main/index.html?configUrl=${encodeURIComponent(
+                    `${process.env.REACT_APP_BACKEND_URL || 'http://localhost:3001'}/api/onlyoffice/config?filename=${editorFilename}`
+                  )}`}
+                />
+              ) : (
+                <div className="h-full flex items-center justify-center text-gray-400">
+                  No document loaded
+                </div>
+              )}
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setEditorExpanded(false)}
-                className="p-2 hover:bg-[#3f3f3f] rounded transition text-gray-300"
-              >
-                <ChevronDown size={20} />
-              </button>
-              <button
-                onClick={() => setShowEditor(false)}
-                className="p-2 hover:bg-[#3f3f3f] rounded transition text-gray-300"
-              >
-                <X size={20} />
-              </button>
+
+            {/* Footer */}
+            <div className="border-t border-[#4e4e4e] p-4 bg-[#2f2f2f] flex-shrink-0">
+              <div className="flex gap-3">
+                {/* Footer content can be added here if needed */}
+              </div>
             </div>
           </>
         )}
-        {!editorExpanded && (
-          <button
-            onClick={() => setEditorExpanded(true)}
-            className="w-full flex justify-center py-2 hover:bg-[#3f3f3f] rounded transition text-gray-300"
-          >
-            <ChevronUp size={20} />
-          </button>
-        )}
       </div>
-
-      {editorExpanded && (
-        <>
-          {/* ONLYOFFICE Editor */}
-          <div className="flex-1 bg-[#1a1a1a]">
-            {editorFilename ? (
-              <iframe
-                title="ONLYOFFICE Editor"
-                className="w-full h-full border-0"
-                src={`https://documentserver.onlyoffice.com/web-apps/apps/documenteditor/main/index.html?configUrl=${encodeURIComponent(
-                  `${process.env.REACT_APP_PUBLIC_BACKEND_URL || 'http://localhost:3001'}/api/onlyoffice/config?filename=${editorFilename}`
-                )}`}
-              />
-            ) : (
-              <div className="h-full flex items-center justify-center text-gray-400">
-                No document loaded
-              </div>
-            )}
-          </div>
-
-          {/* Footer (unchanged) */}
-          <div className="border-t border-[#4e4e4e] p-4 bg-[#2f2f2f] flex-shrink-0">
-            <div className="flex gap-3">
-
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  );
-};
+    );
+  };
 
   return (
     <div className="min-h-screen bg-[#212121] text-gray-100">
