@@ -26,39 +26,48 @@ const ResumeAnalyzer = () => {
   };
 
   const handleOpenEditor = async () => {
-    if (!uploadedFile) {
-      alert('No file uploaded to open in editor');
-      return;
+  if (!uploadedFile) {
+    alert('No file uploaded to open in editor');
+    return;
+  }
+
+  try {
+    const form = new FormData();
+    form.append('file', uploadedFile);
+
+    const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+
+    const resp = await fetch(`${BACKEND_URL}/convert/pdf-to-docx`, {
+      method: "POST",
+      body: form
+    });
+
+    if (!resp.ok) {
+      const txt = await resp.text();
+      throw new Error(`Upload failed: ${resp.status} ${txt}`);
     }
 
-    try {
-      const form = new FormData();
-      form.append('file', uploadedFile);
-
-      const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-
-      const resp = await fetch(`${BACKEND_URL}/api/convert/pdf-to-docx`, {
-        method: "POST",
-        body: form
-      });
-
-      if (!resp.ok) {
-        const txt = await resp.text();
-        throw new Error(`Upload failed: ${resp.status} ${txt}`);
-      }
-
-      const data = await resp.json();
-      if (data && data.docx_filename) {
-        setEditorFilename(data.docx_filename);
-        setShowEditor(true);
-      } else {
-        throw new Error('Invalid response from conversion service');
-      }
-    } catch (err) {
-      console.error('Error opening editor:', err);
-      alert('Failed to open editor: ' + err.message);
+    const disposition = resp.headers.get("content-disposition");
+    if (!disposition) {
+      throw new Error("Missing Content-Disposition header");
     }
-  };
+
+    const match = disposition.match(/filename="?(.+)"?/);
+    if (!match) {
+      throw new Error("Unable to extract filename");
+    }
+
+    const filename = match[1];
+
+    setEditorFilename(filename);
+    setShowEditor(true);
+
+  } catch (err) {
+    console.error('Error opening editor:', err);
+    alert('Failed to open editor: ' + err.message);
+  }
+};
+
 
   const handleAnalyze = async () => {
     if (!jobDescription.trim() || !uploadedFile) {
