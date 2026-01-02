@@ -476,4 +476,3 @@ const ResumeAnalyzer = () => {
 };
 
 export default ResumeAnalyzer;
-make the necessary changes
